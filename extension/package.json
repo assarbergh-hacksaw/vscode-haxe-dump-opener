@@ -1,0 +1,32 @@
+{
+	"name": "haxe-dump-opener",
+	"displayName": "Haxe Dump Opener",
+	"description": "Open the haxe -D dump output for the type under the cursor",
+	"publisher": "local",
+	"version": "0.5.1",
+	"engines": { "vscode": "^1.80.0" },
+	"extensionKind": ["workspace"],
+	"main": "./extension.js",
+	"activationEvents": ["onLanguage:haxe"],
+	"contributes": {
+		"commands": [
+			{ "command": "haxeDump.open", "title": "Haxe: Open .dump for Class" },
+			{ "command": "haxeDump.openToSide", "title": "Haxe: Open .dump for Class to the Side" },
+			{ "command": "haxeDump.peek", "title": "Haxe: Peek .dump for Class" }
+		],
+		"menus": {
+			"editor/context": [
+				{ "command": "haxeDump.peek", "when": "resourceExtname == .hx", "group": "0_haxeDump@1" },
+				{ "command": "haxeDump.open", "when": "resourceExtname == .hx", "group": "0_haxeDump@2" }
+			],
+			"editor/title/context": [
+				{ "command": "haxeDump.open", "when": "resourceExtname == .hx", "group": "0_haxeDump@1" },
+				{ "command": "haxeDump.openToSide", "when": "resourceExtname == .hx", "group": "0_haxeDump@2" }
+			],
+			"explorer/context": [
+				{ "command": "haxeDump.open", "when": "resourceExtname == .hx", "group": "0_haxeDump@1" },
+				{ "command": "haxeDump.openToSide", "when": "resourceExtname == .hx", "group": "0_haxeDump@2" }
+			]
+		}
+	}
+}
