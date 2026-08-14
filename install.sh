@@ -18,6 +18,8 @@ if "$cli" --list-extensions --show-versions 2>/dev/null | grep -qx "local.haxe-d
 	exit 0
 fi
 
+(cd "$src" && haxe build.hxml)
+
 out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 
@@ -53,5 +55,5 @@ cat > "$out/[Content_Types].xml" <<'EOF'
 EOF
 
 (cd "$out" && zip -q -r haxe-dump-opener.vsix 'extension.vsixmanifest' '[Content_Types].xml' extension)
-"$cli" --install-extension "$out/haxe-dump-opener.vsix" --force
-echo "Installed v$version. Reload the window (Developer: Reload Window)."
+# "$cli" --install-extension "$out/haxe-dump-opener.vsix" --force
+# echo "Installed v$version. Reload the window (Developer: Reload Window)."

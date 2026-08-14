@@ -1,0 +1,7 @@
+-cp src
+-lib vscode
+-lib jsasync
+-D js-es=6
+--macro jsasync.JSAsync.use("haxedump")
+-js extension/extension.js
+haxedump.Main

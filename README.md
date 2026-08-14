@@ -9,3 +9,12 @@ Then right-click in a `.hx` editor / file tab / explorer entry, or run it from t
 - **Haxe: Open .dump for Class to the Side** — opens it in a split, next to the source.
 
 Dumps only exist if the build sets `-D dump=pretty`.
+
+## Building
+
+Written in Haxe against the [vscode externs](https://vshaxe.github.io/vscode-extern/). One-time setup:
+
+	haxelib newrepo
+	haxelib install build.hxml --always
+
+Then `haxe build.hxml` (or `./install.sh`, which builds and packages a `.vsix`).
