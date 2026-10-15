@@ -1,8 +1,7 @@
-#if !macro
+using StringTools;
+
 import js.lib.Promise;
 import Vscode.*;
 import vscode.*;
 
-using StringTools;
 using jsasync.JSAsyncTools;
-#end

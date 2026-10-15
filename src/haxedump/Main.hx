@@ -9,11 +9,36 @@ typedef Symbol = {
 }
 
 typedef UriPick = {> QuickPickItem, final uri:Uri;}
-
 final typeName = ~/^[A-Z]\w*$/;
 final firstWord = ~/^\w+/;
 final packageDecl = ~/^package\s+([\w.]*)\s*;/m;
 final dumpFlag = ~/(^|\s)(-D|--define)\s+dump[=\s]/;
+
+// Dumps open as a read-only wrapped view (see Wrap.hx): same path, so the tab still reads
+// Foo.dump, with the real file's URI in the query. The file itself is never rewritten.
+final viewScheme = "haxedump";
+final viewChanged = new EventEmitter<Uri>();
+
+function wrapWidth():Int
+	return workspace.getConfiguration("haxeDump").get("wrapWidth", 120);
+
+function wrapOptions():Wrap.Options {
+	final config = workspace.getConfiguration("haxeDump");
+	final metas:Array<String> = config.get("wrapSkipMeta", []);
+	return {
+		width: wrapWidth(),
+		depth: config.get("wrapDepth", 0),
+		flatMeta: [for (m in metas) m.startsWith("@") ? m : "@" + m],
+	};
+}
+
+function view(dump:Uri):Uri
+	return wrapWidth() > 0 ? dump.with({scheme: viewScheme, query: dump.toString()}) : dump;
+
+@:jsasync function provideView(uri:Uri, token:CancellationToken):Promise<String> {
+	final bytes = workspace.fs.readFile(Uri.parse(uri.query)).jsawait();
+	return Wrap.wrap(new js.html.TextDecoder().decode(bytes), wrapOptions());
+}
 
 // Outermost document symbol containing pos -> the module-level type the cursor sits in.
 // Null when the language server is asleep or the cursor is on imports/package.
@@ -114,14 +139,16 @@ function rank(uri:Uri):Int
 @:jsasync function resolve(uri:Null<Uri>):Promise<Null<Uri>> {
 	final ed = window.activeTextEditor;
 	final aimedAt = uri != null ? uri : (ed == null ? null : ed.document.uri);
-	final src = aimedAt == null ? null : aimedAt.fsPath;
+	// path, not fsPath: fsPath is backslash-separated when the extension host runs on Windows,
+	// which the "/" splitting below would miss. path is always "/" whatever the scheme.
+	final src = aimedAt == null ? null : aimedAt.path;
 	if (src == null || !src.endsWith(".hx")) {
 		window.showWarningMessage("Not a .hx file");
 		return null;
 	}
 
 	// Explorer right-click can target a file that isn't the focused editor: no cursor there.
-	final cursorIn = ed != null && ed.document.uri.fsPath == src ? ed : null;
+	final cursorIn = ed != null && ed.document.uri.path == src ? ed : null;
 	final module = src.substring(src.lastIndexOf("/") + 1, src.length - 3);
 	final type = targetType(cursorIn, module).jsawait();
 	final pkgDir = cursorIn != null && packageDecl.match(cursorIn.document.getText()) ? packageDecl.matched(1).replace(".", "/") : "";
@@ -144,9 +171,11 @@ function rank(uri:Uri):Int
 	final hits = workspace.findFiles('dump/**/$word.dump', null, 1).jsawait();
 	if (hits.length == 0)
 		return null;
-	// Own command taking an fsPath: the built-in vscode.open re-parses a string arg as a
-	// path, so handing it a file:// URI lands on /workspaces/.../file:///workspaces/...
-	final args = haxe.Json.stringify([hits[0].fsPath]).urlEncode();
+	// Own command rather than the built-in vscode.open, which re-parses a string arg as a
+	// path and lands on /workspaces/.../file:///workspaces/... Round-trip the whole URI, not
+	// just fsPath: running as a ui extension against a remote workspace, the scheme and
+	// authority are what say "the container's /workspaces", not the host's.
+	final args = haxe.Json.stringify([view(hits[0]).toString()]).urlEncode();
 	final md = new MarkdownString('[Open ${workspace.asRelativePath(hits[0])}](command:haxeDump.openFile?$args)');
 	md.isTrusted = true;
 	return new Hover(md, range);
@@ -155,7 +184,7 @@ function rank(uri:Uri):Int
 @:jsasync function open(uri:Null<Uri>, ?column:ViewColumn) {
 	final chosen = resolve(uri).jsawait();
 	if (chosen != null)
-		window.showTextDocument(chosen, {preview: false, viewColumn: column});
+		window.showTextDocument(view(chosen), {preview: false, viewColumn: column});
 }
 
 @:jsasync function peek(uri:Null<Uri>) {
@@ -164,17 +193,29 @@ function rank(uri:Uri):Int
 	if (chosen == null)
 		return;
 	if (ed == null) {
-		window.showTextDocument(chosen, {preview: false});
+		window.showTextDocument(view(chosen), {preview: false});
 		return;
 	}
 	// Built-in peek widget: the dump renders inline under the cursor line, no custom UI.
-	commands.executeCommand("editor.action.peekLocations", ed.document.uri, ed.selection.active, [new Location(chosen, new Position(0, 0))], "peek");
+	commands.executeCommand("editor.action.peekLocations", ed.document.uri, ed.selection.active, [new Location(view(chosen), new Position(0, 0))], "peek");
 }
 
 @:expose("activate") function main(ctx:ExtensionContext) {
 	ctx.subscriptions.push(languages.registerHoverProvider({language: "haxe"}, {provideHover: provideHover}));
-	ctx.subscriptions.push(commands.registerCommand("haxeDump.openFile", (path:String) -> window.showTextDocument(Uri.file(path), {preview: false})));
+	ctx.subscriptions.push(commands.registerCommand("haxeDump.openFile", (uri:String) -> window.showTextDocument(Uri.parse(uri), {preview: false})));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.open", (?uri:Uri) -> open(uri)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.openToSide", (?uri:Uri) -> open(uri, Beside)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.peek", (?uri:Uri) -> peek(uri)));
+
+	// Every compile rewrites the dumps: re-wrap any open view of one. Cheap for closed ones,
+	// VS Code only re-asks for documents it has open.
+	ctx.subscriptions.push(workspace.registerTextDocumentContentProvider(viewScheme, {onDidChange: viewChanged.event, provideTextDocumentContent: provideView}));
+	final watcher = workspace.createFileSystemWatcher("**/dump/**/*.dump", false, false, true);
+	ctx.subscriptions.push(watcher);
+	ctx.subscriptions.push(watcher.onDidChange(uri -> viewChanged.fire(view(uri))));
+	ctx.subscriptions.push(watcher.onDidCreate(uri -> viewChanged.fire(view(uri))));
+	ctx.subscriptions.push(workspace.onDidChangeConfiguration(e -> if (e.affectsConfiguration("haxeDump"))
+		for (doc in workspace.textDocuments)
+			if (doc.uri.scheme == viewScheme)
+				viewChanged.fire(doc.uri)));
 }

@@ -54,6 +54,9 @@ cat > "$out/[Content_Types].xml" <<'EOF'
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".js" ContentType="application/javascript"/><Default Extension=".json" ContentType="application/json"/><Default Extension=".vsixmanifest" ContentType="text/xml"/></Types>
 EOF
 
-(cd "$out" && zip -q -r haxe-dump-opener.vsix 'extension.vsixmanifest' '[Content_Types].xml' extension)
-# "$cli" --install-extension "$out/haxe-dump-opener.vsix" --force
-# echo "Installed v$version. Reload the window (Developer: Reload Window)."
+vsix="$src/haxe-dump-opener.vsix"
+rm -f "$vsix" # zip -r updates an existing archive rather than replacing it
+(cd "$out" && zip -q -r "$vsix" 'extension.vsixmanifest' '[Content_Types].xml' extension)
+echo "Packaged $vsix"
+"$cli" --install-extension "$vsix" --force
+echo "Installed v$version. Reload the window (Developer: Reload Window)."

@@ -3,12 +3,35 @@
 	"displayName": "Haxe Dump Opener",
 	"description": "Open the haxe -D dump output for the type under the cursor",
 	"publisher": "local",
-	"version": "0.5.1",
+	"version": "0.7.0",
 	"engines": { "vscode": "^1.80.0" },
 	"extensionKind": ["workspace"],
 	"main": "./extension.js",
 	"activationEvents": ["onLanguage:haxe"],
 	"contributes": {
+		"configuration": {
+			"title": "Haxe Dump Opener",
+			"properties": {
+				"haxeDump.wrapWidth": {
+					"type": "integer",
+					"default": 120,
+					"minimum": 0,
+					"description": "Dumps open as a read-only view with lines longer than this wrapped, one bracketed element per line. Refreshes when a rebuild rewrites the dump. 0 opens the raw file."
+				},
+				"haxeDump.wrapDepth": {
+					"type": "integer",
+					"default": 0,
+					"minimum": 0,
+					"description": "How many bracket levels deep a long line gets broken. 1 = only the outermost group (e.g. one array entry per line, each entry kept whole). 0 = no limit."
+				},
+				"haxeDump.wrapSkipMeta": {
+					"type": "array",
+					"items": { "type": "string" },
+					"default": [":value"],
+					"description": "Metadata whose arguments are left on one line, e.g. \":value\" (the initializer copy the compiler adds next to every field)."
+				}
+			}
+		},
 		"commands": [
 			{ "command": "haxeDump.open", "title": "Haxe: Open .dump for Class" },
 			{ "command": "haxeDump.openToSide", "title": "Haxe: Open .dump for Class to the Side" },
