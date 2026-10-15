@@ -206,6 +206,7 @@ function rank(uri:Uri):Int
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.open", (?uri:Uri) -> open(uri)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.openToSide", (?uri:Uri) -> open(uri, Beside)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.peek", (?uri:Uri) -> peek(uri)));
+	MetaDocs.register(ctx);
 
 	// Every compile rewrites the dumps: re-wrap any open view of one. Cheap for closed ones,
 	// VS Code only re-asks for documents it has open.

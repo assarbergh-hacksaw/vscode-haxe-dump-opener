@@ -58,6 +58,16 @@ class Lambda {
 		}
 		return false;
 	}
+	static find(it,f) {
+		let v = $getIterator(it);
+		while(v.hasNext()) {
+			let v1 = v.next();
+			if(f(v1)) {
+				return v1;
+			}
+		}
+		return null;
+	}
 }
 Lambda.__name__ = true;
 Math.__name__ = true;
@@ -112,8 +122,23 @@ class haxe_Exception extends Error {
 		this.__previousException = previous;
 		this.__nativeException = native != null ? native : this;
 	}
+	unwrap() {
+		return this.__nativeException;
+	}
+	get_message() {
+		return this.message;
+	}
 	get_native() {
 		return this.__nativeException;
+	}
+	static caught(value) {
+		if(((value) instanceof haxe_Exception)) {
+			return value;
+		} else if(((value) instanceof Error)) {
+			return new haxe_Exception(value.message,null,value);
+		} else {
+			return new haxe_ValueException(value,null,value);
+		}
 	}
 	static thrown(value) {
 		if(((value) instanceof haxe_Exception)) {
@@ -132,8 +157,42 @@ class haxe_ValueException extends haxe_Exception {
 		super(String(value),previous,native);
 		this.value = value;
 	}
+	unwrap() {
+		return this.value;
+	}
 }
 haxe_ValueException.__name__ = true;
+class haxe_io_Bytes {
+	constructor(data) {
+		this.length = data.byteLength;
+		this.b = new Uint8Array(data);
+		this.b.bufferValue = data;
+		data.hxBytes = this;
+		data.bytes = this.b;
+	}
+}
+haxe_io_Bytes.__name__ = true;
+class haxe_io_Eof {
+	constructor() {
+	}
+	toString() {
+		return "Eof";
+	}
+}
+haxe_io_Eof.__name__ = true;
+var haxe_io_Error = $hxEnums["haxe.io.Error"] = { __ename__:true,__constructs__:null
+	,Blocked: {_hx_name:"Blocked",_hx_index:0,__enum__:"haxe.io.Error",toString:$estr}
+	,Overflow: {_hx_name:"Overflow",_hx_index:1,__enum__:"haxe.io.Error",toString:$estr}
+	,OutsideBounds: {_hx_name:"OutsideBounds",_hx_index:2,__enum__:"haxe.io.Error",toString:$estr}
+	,Custom: ($_=function(e) { return {_hx_index:3,e:e,__enum__:"haxe.io.Error",toString:$estr}; },$_._hx_name="Custom",$_.__params__ = ["e"],$_)
+};
+haxe_io_Error.__constructs__ = [haxe_io_Error.Blocked,haxe_io_Error.Overflow,haxe_io_Error.OutsideBounds,haxe_io_Error.Custom];
+class haxe_io_Input {
+}
+haxe_io_Input.__name__ = true;
+class haxe_io_Output {
+}
+haxe_io_Output.__name__ = true;
 class haxe_iterators_ArrayIterator {
 	constructor(array) {
 		this.current = 0;
@@ -404,6 +463,7 @@ function haxedump_Main_main(ctx) {
 	ctx.subscriptions.push(Vscode.commands.registerCommand("haxeDump.peek",function(uri) {
 		return haxedump_Main_peek(uri);
 	}));
+	haxedump_MetaDocs_register(ctx);
 	ctx.subscriptions.push(Vscode.workspace.registerTextDocumentContentProvider(haxedump_Main_viewScheme,{ onDidChange : haxedump_Main_viewChanged.event, provideTextDocumentContent : haxedump_Main_provideView}));
 	let watcher = Vscode.workspace.createFileSystemWatcher("**/dump/**/*.dump",false,false,true);
 	ctx.subscriptions.push(watcher);
@@ -428,6 +488,110 @@ function haxedump_Main_main(ctx) {
 	}));
 }
 $hx_exports["activate"] = haxedump_Main_main;
+function haxedump_MetaDocs_parse(json) {
+	let docs = JSON.parse(json);
+	if(!((docs) instanceof Array)) {
+		throw haxe_Exception.thrown("expected an array of metadata descriptions");
+	}
+	let _g_current = 0;
+	let _g_array = docs;
+	while(_g_current < _g_array.length) {
+		let _g_value = _g_array[_g_current];
+		let _g_key = _g_current++;
+		let i = _g_key;
+		let meta = _g_value;
+		if(typeof(meta.metadata) != "string" || typeof(meta.doc) != "string" || meta.params != null && !((meta.params) instanceof Array)) {
+			throw haxe_Exception.thrown("entry " + i + " needs string \"metadata\" and \"doc\", and \"params\" as an array if any");
+		}
+	}
+	return docs;
+}
+function haxedump_MetaDocs_inComment(before) {
+	if(before.lastIndexOf("/*") <= before.lastIndexOf("*/")) {
+		return HxOverrides.substr(before,before.lastIndexOf("\n") + 1,null).includes("//");
+	} else {
+		return true;
+	}
+}
+async function haxedump_MetaDocs_load() {
+	
+	let vshaxe = Vscode.extensions.getExtension("nadako.vshaxe");
+	if(vshaxe == null) {
+		return [];
+	}
+	let config = (await (await vshaxe.activate()).getActiveConfiguration());
+	let files_h = Object.create(null);
+	let _g = 0;
+	let _g1 = config.classPaths;
+	while(_g < _g1.length) {
+		let cp = _g1[_g];
+		++_g;
+		files_h[js_node_Path.resolve(cp.path,"..",haxedump_MetaDocs_docsFile)] = true;
+	}
+	let docs = [];
+	let h = files_h;
+	let file_h = h;
+	let file_keys = Object.keys(h);
+	let file_length = file_keys.length;
+	let file_current = 0;
+	while(file_current < file_length) {
+		let file = file_keys[file_current++];
+		if(sys_FileSystem.exists(file)) {
+			try {
+				let _g = 0;
+				let _g1 = haxedump_MetaDocs_parse(js_node_Fs.readFileSync(file,{ encoding : "utf8"}));
+				while(_g < _g1.length) {
+					let meta = _g1[_g];
+					++_g;
+					docs.push(meta);
+				}
+			} catch( _g ) {
+				let e = haxe_Exception.caught(_g);
+				Vscode.window.showErrorMessage("" + file + ": " + e.get_message());
+			}
+		}
+	}
+	return docs;
+}
+function haxedump_MetaDocs_markdown(meta) {
+	let params = meta.params == null ? "" : "(" + meta.params.join(", ") + ")";
+	return new vscode_MarkdownString().appendCodeblock("@" + meta.metadata + params,"haxe").appendMarkdown(meta.doc);
+}
+async function haxedump_MetaDocs_hover(doc,pos,token) {
+	
+	let range = doc.getWordRangeAtPosition(pos,haxedump_MetaDocs_metaWord);
+	if(range == null) {
+		return null;
+	}
+	let name = doc.getText(range);
+	let meta = Lambda.find((await haxedump_MetaDocs_load()),function(meta) {
+		return "@" + meta.metadata == name;
+	});
+	return meta == null ? null : new vscode_Hover(haxedump_MetaDocs_markdown(meta),range);
+}
+async function haxedump_MetaDocs_complete(doc,pos,token,context) {
+	
+	let range = doc.getWordRangeAtPosition(pos,haxedump_MetaDocs_metaWord);
+	if(range == null || haxedump_MetaDocs_inComment(doc.getText(new vscode_Range(new vscode_Position(0,0),range.start)))) {
+		return [];
+	}
+	let docs = (await haxedump_MetaDocs_load());
+	let _g = [];
+	let _g1 = 0;
+	while(_g1 < docs.length) {
+		let meta = docs[_g1];
+		++_g1;
+		let item = new vscode_CompletionItem("@" + meta.metadata,vscode_CompletionItemKind.Function);
+		item.range = range;
+		item.documentation = haxedump_MetaDocs_markdown(meta);
+		_g.push(item);
+	}
+	return _g;
+}
+function haxedump_MetaDocs_register(ctx) {
+	ctx.subscriptions.push(Vscode.languages.registerHoverProvider({ language : "haxe"},{ provideHover : haxedump_MetaDocs_hover}));
+	ctx.subscriptions.push(Vscode.languages.registerCompletionItemProvider({ language : "haxe"},{ provideCompletionItems : haxedump_MetaDocs_complete},"@",":"));
+}
 var haxedump_Node = $hxEnums["haxedump.Node"] = { __ename__:true,__constructs__:null
 	,Text: ($_=function(s) { return {_hx_index:0,s:s,__enum__:"haxedump.Node",toString:$estr}; },$_._hx_name="Text",$_.__params__ = ["s"],$_)
 	,Sep: ($_=function(s) { return {_hx_index:1,s:s,__enum__:"haxedump.Node",toString:$estr}; },$_._hx_name="Sep",$_.__params__ = ["s"],$_)
@@ -677,16 +841,174 @@ class js_Boot {
 	}
 }
 js_Boot.__name__ = true;
+var js_node_Fs = require("fs");
+class js_node_KeyValue {
+	static get_key(this1) {
+		return this1[0];
+	}
+	static get_value(this1) {
+		return this1[1];
+	}
+}
+var js_node_Path = require("path");
+var js_node_buffer_Buffer = require("buffer").Buffer;
+class js_node_stream_WritableNewOptionsAdapter {
+	static from(options) {
+		if(!Object.prototype.hasOwnProperty.call(options,"final")) {
+			Object.defineProperty(options,"final",{ get : function() {
+				return options.final_;
+			}});
+		}
+		return options;
+	}
+}
 class jsasync_JSAsyncTools {
 }
 jsasync_JSAsyncTools.__name__ = true;
 class jsasync_impl_Helper {
 }
 jsasync_impl_Helper.__name__ = true;
+class sys_FileSystem {
+	static exists(path) {
+		try {
+			js_node_Fs.accessSync(path);
+			return true;
+		} catch( _g ) {
+			return false;
+		}
+	}
+}
+sys_FileSystem.__name__ = true;
+class sys_io_FileInput extends haxe_io_Input {
+	constructor(fd) {
+		super();
+		this.hasReachedEof = false;
+		this.fd = fd;
+		this.pos = 0;
+	}
+	throwEof() {
+		this.hasReachedEof = true;
+		throw haxe_Exception.thrown(new haxe_io_Eof());
+	}
+	readByte() {
+		let buf = js_node_buffer_Buffer.alloc(1);
+		let bytesRead;
+		try {
+			bytesRead = js_node_Fs.readSync(this.fd,buf,0,1,this.pos);
+		} catch( _g ) {
+			let e = haxe_Exception.caught(_g).unwrap();
+			if(e.code == "EOF") {
+				this.hasReachedEof = true;
+				throw haxe_Exception.thrown(new haxe_io_Eof());
+			}
+			throw haxe_Exception.thrown(haxe_io_Error.Custom(e));
+		}
+		if(bytesRead == 0) {
+			this.hasReachedEof = true;
+			throw haxe_Exception.thrown(new haxe_io_Eof());
+		}
+		this.pos++;
+		return buf[0];
+	}
+	readBytes(s,pos,len) {
+		let data = s.b;
+		let buf = js_node_buffer_Buffer.from(data.buffer,data.byteOffset,s.length);
+		let bytesRead;
+		try {
+			bytesRead = js_node_Fs.readSync(this.fd,buf,pos,len,this.pos);
+		} catch( _g ) {
+			let e = haxe_Exception.caught(_g).unwrap();
+			if(e.code == "EOF") {
+				this.hasReachedEof = true;
+				throw haxe_Exception.thrown(new haxe_io_Eof());
+			}
+			throw haxe_Exception.thrown(haxe_io_Error.Custom(e));
+		}
+		if(bytesRead == 0) {
+			this.hasReachedEof = true;
+			throw haxe_Exception.thrown(new haxe_io_Eof());
+		}
+		this.pos += bytesRead;
+		return bytesRead;
+	}
+	close() {
+		js_node_Fs.closeSync(this.fd);
+	}
+	seek(p,pos) {
+		this.hasReachedEof = false;
+		switch(pos._hx_index) {
+		case 0:
+			this.pos = p;
+			break;
+		case 1:
+			this.pos += p;
+			break;
+		case 2:
+			this.pos = js_node_Fs.fstatSync(this.fd).size + p;
+			break;
+		}
+	}
+	tell() {
+		return this.pos;
+	}
+	eof() {
+		return this.hasReachedEof;
+	}
+}
+sys_io_FileInput.__name__ = true;
+class sys_io_FileOutput extends haxe_io_Output {
+	constructor(fd) {
+		super();
+		this.fd = fd;
+		this.pos = 0;
+	}
+	writeByte(b) {
+		let buf = js_node_buffer_Buffer.alloc(1);
+		buf[0] = b;
+		js_node_Fs.writeSync(this.fd,buf,0,1,this.pos);
+		this.pos++;
+	}
+	writeBytes(s,pos,len) {
+		let data = s.b;
+		let buf = js_node_buffer_Buffer.from(data.buffer,data.byteOffset,s.length);
+		let wrote = js_node_Fs.writeSync(this.fd,buf,pos,len,this.pos);
+		this.pos += wrote;
+		return wrote;
+	}
+	close() {
+		js_node_Fs.closeSync(this.fd);
+	}
+	seek(p,pos) {
+		switch(pos._hx_index) {
+		case 0:
+			this.pos = p;
+			break;
+		case 1:
+			this.pos += p;
+			break;
+		case 2:
+			this.pos = js_node_Fs.fstatSync(this.fd).size + p;
+			break;
+		}
+	}
+	tell() {
+		return this.pos;
+	}
+}
+sys_io_FileOutput.__name__ = true;
+var sys_io_FileSeek = $hxEnums["sys.io.FileSeek"] = { __ename__:true,__constructs__:null
+	,SeekBegin: {_hx_name:"SeekBegin",_hx_index:0,__enum__:"sys.io.FileSeek",toString:$estr}
+	,SeekCur: {_hx_name:"SeekCur",_hx_index:1,__enum__:"sys.io.FileSeek",toString:$estr}
+	,SeekEnd: {_hx_name:"SeekEnd",_hx_index:2,__enum__:"sys.io.FileSeek",toString:$estr}
+};
+sys_io_FileSeek.__constructs__ = [sys_io_FileSeek.SeekBegin,sys_io_FileSeek.SeekCur,sys_io_FileSeek.SeekEnd];
+var vscode_CompletionItem = require("vscode").CompletionItem;
+var vscode_CompletionItemKind = require("vscode").CompletionItemKind;
 var vscode_Hover = require("vscode").Hover;
 var vscode_Location = require("vscode").Location;
 var vscode_MarkdownString = require("vscode").MarkdownString;
 var vscode_Position = require("vscode").Position;
+var vscode_Range = require("vscode").Range;
 var vscode_Uri = require("vscode").Uri;
 var vscode_ViewColumn = require("vscode").ViewColumn;
 var vscode_WorkspaceEdit = require("vscode").WorkspaceEdit;
@@ -705,4 +1027,6 @@ var haxedump_Main_packageDecl = new EReg("^package\\s+([\\w.]*)\\s*;","m");
 var haxedump_Main_dumpFlag = new EReg("(^|\\s)(-D|--define)\\s+dump[=\\s]","");
 var haxedump_Main_viewScheme = "haxedump";
 var haxedump_Main_viewChanged = new vscode_EventEmitter();
+var haxedump_MetaDocs_docsFile = "haxe-metadata.json";
+var haxedump_MetaDocs_metaWord = new RegExp("@:?[\\w.]*");
 })(typeof exports != "undefined" ? exports : typeof window != "undefined" ? window : typeof self != "undefined" ? self : this, {});
