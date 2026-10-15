@@ -35,6 +35,19 @@ function inComment(before:String):Bool
 // `@`, `@:`, `@:name`: the metadata being typed or hovered.
 final metaWord = new js.lib.RegExp("@:?[\\w.]*");
 
+// `@:name(` right before the cursor.
+final metaCall = new js.lib.RegExp("@(:?[\\w.]+)\\($");
+
+// A single `{…}` param: the metadata takes one structure, whose keys the compiler completes.
+function takesStructure(meta:MetaDoc):Bool
+	return meta.params != null && meta.params.length == 1 && meta.params[0].startsWith("{");
+
+// The braces with the cursor inside; paired with `suggest`, which lists the keys.
+function braces(before:String, after:String):SnippetString
+	return new SnippetString().appendText('$before{').appendTabstop(0).appendText('}$after');
+
+final suggest:Command = {title: "Suggest", command: "editor.action.triggerSuggest"};
+
 typedef Vshaxe = {
 	function getActiveConfiguration():Promise<{final classPaths:Array<{final path:String;}>;}>;
 }
@@ -84,16 +97,41 @@ function markdown(meta:MetaDoc):MarkdownString {
 }
 
 @:jsasync function complete(doc:TextDocument, pos:Position, token:CancellationToken, context:CompletionContext):Promise<Array<CompletionItem>> {
-	final range = doc.getWordRangeAtPosition(pos, metaWord);
-	if (range == null || inComment(doc.getText(new Range(new Position(0, 0), range.start)))) {
+	final before = doc.getText(new Range(new Position(0, 0), pos));
+	if (inComment(before)) {
 		return [];
 	}
+	final config = workspace.getConfiguration("haxeDump");
+	final call = metaCall.exec(before);
+	if (call != null) {
+		if (!config.get("metaBracesOnParen", true)) {
+			return [];
+		}
+		final meta = Lambda.find(load().jsawait(), meta -> meta.metadata == call[1]);
+		if (meta == null || !takesStructure(meta)) {
+			return [];
+		}
+		final item = new CompletionItem("{…}", Struct);
+		item.insertText = braces("", "");
+		item.documentation = markdown(meta);
+		item.command = suggest;
+		return [item];
+	}
+	final range = doc.getWordRangeAtPosition(pos, metaWord);
+	if (range == null) {
+		return [];
+	}
+	final addBraces = config.get("metaBraces", true) && doc.getText(new Range(range.end, range.end.translate(0, 1))) != "(";
 	final docs = load().jsawait();
 	return [
 		for (meta in docs) {
 			final item = new CompletionItem('@${meta.metadata}', Function);
 			item.range = range;
 			item.documentation = markdown(meta);
+			if (addBraces && takesStructure(meta)) {
+				item.insertText = braces('@${meta.metadata}(', ")");
+				item.command = suggest;
+			}
 			item;
 		}
 	];
@@ -101,5 +139,5 @@ function markdown(meta:MetaDoc):MarkdownString {
 
 function register(ctx:ExtensionContext) {
 	ctx.subscriptions.push(languages.registerHoverProvider({language: "haxe"}, {provideHover: hover}));
-	ctx.subscriptions.push(languages.registerCompletionItemProvider({language: "haxe"}, {provideCompletionItems: complete}, "@", ":"));
+	ctx.subscriptions.push(languages.registerCompletionItemProvider({language: "haxe"}, {provideCompletionItems: complete}, "@", ":", "("));
 }

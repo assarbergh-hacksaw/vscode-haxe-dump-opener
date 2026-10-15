@@ -3,7 +3,7 @@
 	"displayName": "Haxe Dump Opener",
 	"description": "Open the haxe -D dump output for the type under the cursor",
 	"publisher": "local",
-	"version": "0.8.0",
+	"version": "0.10.0",
 	"engines": { "vscode": "^1.80.0" },
 	"extensionKind": ["workspace"],
 	"main": "./extension.js",
@@ -29,6 +29,16 @@
 					"items": { "type": "string" },
 					"default": [":value"],
 					"description": "Metadata whose arguments are left on one line, e.g. \":value\" (the initializer copy the compiler adds next to every field)."
+				},
+				"haxeDump.metaBraces": {
+					"type": "boolean",
+					"default": true,
+					"description": "Completing the name of metadata that takes one structure (a single \"{…}\" in its haxe-metadata.json params) inserts \"({})\" and opens the suggestions inside the braces."
+				},
+				"haxeDump.metaBracesOnParen": {
+					"type": "boolean",
+					"default": true,
+					"description": "Typing \"(\" after the name of metadata that takes one structure suggests \"{…}\", which inserts the braces and opens the suggestions inside them."
 				}
 			}
 		},

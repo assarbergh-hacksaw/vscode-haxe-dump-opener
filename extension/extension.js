@@ -513,6 +513,16 @@ function haxedump_MetaDocs_inComment(before) {
 		return true;
 	}
 }
+function haxedump_MetaDocs_takesStructure(meta) {
+	if(meta.params != null && meta.params.length == 1) {
+		return meta.params[0].startsWith("{");
+	} else {
+		return false;
+	}
+}
+function haxedump_MetaDocs_braces(before,after) {
+	return new vscode_SnippetString().appendText("" + before + "{").appendTabstop(0).appendText("}" + after);
+}
 async function haxedump_MetaDocs_load() {
 	
 	let vshaxe = Vscode.extensions.getExtension("nadako.vshaxe");
@@ -571,10 +581,33 @@ async function haxedump_MetaDocs_hover(doc,pos,token) {
 }
 async function haxedump_MetaDocs_complete(doc,pos,token,context) {
 	
-	let range = doc.getWordRangeAtPosition(pos,haxedump_MetaDocs_metaWord);
-	if(range == null || haxedump_MetaDocs_inComment(doc.getText(new vscode_Range(new vscode_Position(0,0),range.start)))) {
+	let before = doc.getText(new vscode_Range(new vscode_Position(0,0),pos));
+	if(haxedump_MetaDocs_inComment(before)) {
 		return [];
 	}
+	let config = Vscode.workspace.getConfiguration("haxeDump");
+	let call = haxedump_MetaDocs_metaCall.exec(before);
+	if(call != null) {
+		if(!config.get("metaBracesOnParen",true)) {
+			return [];
+		}
+		let meta = Lambda.find((await haxedump_MetaDocs_load()),function(meta) {
+			return meta.metadata == call[1];
+		});
+		if(meta == null || !haxedump_MetaDocs_takesStructure(meta)) {
+			return [];
+		}
+		let item = new vscode_CompletionItem("{…}",vscode_CompletionItemKind.Struct);
+		item.insertText = haxedump_MetaDocs_braces("","");
+		item.documentation = haxedump_MetaDocs_markdown(meta);
+		item.command = haxedump_MetaDocs_suggest;
+		return [item];
+	}
+	let range = doc.getWordRangeAtPosition(pos,haxedump_MetaDocs_metaWord);
+	if(range == null) {
+		return [];
+	}
+	let addBraces = config.get("metaBraces",true) && doc.getText(new vscode_Range(range.end,range.end.translate(0,1))) != "(";
 	let docs = (await haxedump_MetaDocs_load());
 	let _g = [];
 	let _g1 = 0;
@@ -584,13 +617,17 @@ async function haxedump_MetaDocs_complete(doc,pos,token,context) {
 		let item = new vscode_CompletionItem("@" + meta.metadata,vscode_CompletionItemKind.Function);
 		item.range = range;
 		item.documentation = haxedump_MetaDocs_markdown(meta);
+		if(addBraces && haxedump_MetaDocs_takesStructure(meta)) {
+			item.insertText = haxedump_MetaDocs_braces("@" + meta.metadata + "(",")");
+			item.command = haxedump_MetaDocs_suggest;
+		}
 		_g.push(item);
 	}
 	return _g;
 }
 function haxedump_MetaDocs_register(ctx) {
 	ctx.subscriptions.push(Vscode.languages.registerHoverProvider({ language : "haxe"},{ provideHover : haxedump_MetaDocs_hover}));
-	ctx.subscriptions.push(Vscode.languages.registerCompletionItemProvider({ language : "haxe"},{ provideCompletionItems : haxedump_MetaDocs_complete},"@",":"));
+	ctx.subscriptions.push(Vscode.languages.registerCompletionItemProvider({ language : "haxe"},{ provideCompletionItems : haxedump_MetaDocs_complete},"@",":","("));
 }
 var haxedump_Node = $hxEnums["haxedump.Node"] = { __ename__:true,__constructs__:null
 	,Text: ($_=function(s) { return {_hx_index:0,s:s,__enum__:"haxedump.Node",toString:$estr}; },$_._hx_name="Text",$_.__params__ = ["s"],$_)
@@ -1009,6 +1046,7 @@ var vscode_Location = require("vscode").Location;
 var vscode_MarkdownString = require("vscode").MarkdownString;
 var vscode_Position = require("vscode").Position;
 var vscode_Range = require("vscode").Range;
+var vscode_SnippetString = require("vscode").SnippetString;
 var vscode_Uri = require("vscode").Uri;
 var vscode_ViewColumn = require("vscode").ViewColumn;
 var vscode_WorkspaceEdit = require("vscode").WorkspaceEdit;
@@ -1029,4 +1067,6 @@ var haxedump_Main_viewScheme = "haxedump";
 var haxedump_Main_viewChanged = new vscode_EventEmitter();
 var haxedump_MetaDocs_docsFile = "haxe-metadata.json";
 var haxedump_MetaDocs_metaWord = new RegExp("@:?[\\w.]*");
+var haxedump_MetaDocs_metaCall = new RegExp("@(:?[\\w.]+)\\($");
+var haxedump_MetaDocs_suggest = { title : "Suggest", command : "editor.action.triggerSuggest"};
 })(typeof exports != "undefined" ? exports : typeof window != "undefined" ? window : typeof self != "undefined" ? self : this, {});
