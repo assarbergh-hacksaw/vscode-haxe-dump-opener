@@ -5,6 +5,7 @@ package haxedump;
 typedef Symbol = {
 	final name:String;
 	final ?range:Range;
+	final ?selectionRange:Range;
 	final ?location:{final range:Range;};
 }
 
@@ -40,6 +41,12 @@ function view(dump:Uri):Uri
 	return Wrap.wrap(new js.html.TextDecoder().decode(bytes), wrapOptions());
 }
 
+function rangeOf(s:Symbol):Range
+	return s.range != null ? s.range : s.location.range;
+
+function packageDir(doc:TextDocument):String
+	return packageDecl.match(doc.getText()) ? packageDecl.matched(1).replace(".", "/") : "";
+
 // Outermost document symbol containing pos -> the module-level type the cursor sits in.
 // Null when the language server is asleep or the cursor is on imports/package.
 @:jsasync function enclosingType(doc:TextDocument, pos:Position):Promise<Null<String>> {
@@ -48,7 +55,7 @@ function view(dump:Uri):Uri
 	var bestHeight = -1;
 	if (syms != null)
 		for (s in syms) {
-			final range = s.range != null ? s.range : s.location.range;
+			final range = rangeOf(s);
 			if (!range.contains(pos))
 				continue;
 			final height = range.end.line - range.start.line;
@@ -78,22 +85,28 @@ function view(dump:Uri):Uri
 function rank(uri:Uri):Int
 	return uri.path.contains("/dump/js/") ? 0 : uri.path.contains("/dump/macro/") ? 2 : 1;
 
-@:jsasync function pick(hits:Array<Uri>, pkgDir:String):Promise<Null<Uri>> {
+// Best first. Same type name in several packages: narrowed to this file's own package when it matches.
+function candidates(hits:Array<Uri>, pkgDir:String):Array<Uri> {
 	final sorted = hits.copy();
 	sorted.sort((a, b) -> rank(a) - rank(b));
-	// Same type name in several packages: narrow to this file's own package when it matches.
 	final inPkg = (uri:Uri) -> pkgDir != "" && uri.path.substring(0, uri.path.lastIndexOf("/")).endsWith(pkgDir);
-	final scope = Lambda.exists(sorted, inPkg) ? sorted.filter(inPkg) : sorted;
+	return Lambda.exists(sorted, inPkg) ? sorted.filter(inPkg) : sorted;
+}
 
-	if (scope.length == 1)
+// The only candidate, else the only dump/js one, else the user's pick.
+@:jsasync function choose(scope:Array<Uri>):Promise<Null<Uri>> {
+	if (scope.length == 1) {
 		return scope[0];
+	}
 	final js = scope.filter(uri -> rank(uri) == 0);
-	if (js.length == 1)
+	if (js.length == 1) {
 		return js[0];
+	}
 
 	final items:Array<UriPick> = [
-		for (i => uri in scope)
-			{label: workspace.asRelativePath(uri), description: i == 0 ? "recommended" : null, uri: uri}
+		for (i => uri in scope) {
+			{label: workspace.asRelativePath(uri), description: i == 0 ? "recommended" : null, uri: uri};
+		}
 	];
 	final chosen = window.showQuickPick(items, {placeHolder: "Multiple dumps match"}).jsawait();
 	return chosen == null ? null : chosen.uri;
@@ -151,7 +164,7 @@ function rank(uri:Uri):Int
 	final cursorIn = ed != null && ed.document.uri.path == src ? ed : null;
 	final module = src.substring(src.lastIndexOf("/") + 1, src.length - 3);
 	final type = targetType(cursorIn, module).jsawait();
-	final pkgDir = cursorIn != null && packageDecl.match(cursorIn.document.getText()) ? packageDecl.matched(1).replace(".", "/") : "";
+	final pkgDir = cursorIn != null ? packageDir(cursorIn.document) : "";
 
 	// ponytail: 20 is plenty for a type name; bump if a name ever collides more than that
 	final hits = workspace.findFiles('dump/**/$type.dump', null, 20).jsawait();
@@ -159,11 +172,14 @@ function rank(uri:Uri):Int
 		reportMiss(type);
 		return null;
 	}
-	return pick(hits, pkgDir).jsawait();
+	return choose(candidates(hits, pkgDir)).jsawait();
 }
 
 // Menu titles are static in package.json, so the hover is where the resolved dump gets named.
 @:jsasync function provideHover(doc:TextDocument, pos:Position, token:CancellationToken) {
+	if (!workspace.getConfiguration("haxeDump").get("hover", true)) {
+		return null;
+	}
 	final range = doc.getWordRangeAtPosition(pos);
 	final word = range == null ? null : doc.getText(range);
 	if (word == null || !typeName.match(word))
@@ -196,8 +212,169 @@ function rank(uri:Uri):Int
 		window.showTextDocument(view(chosen), {preview: false});
 		return;
 	}
-	// Built-in peek widget: the dump renders inline under the cursor line, no custom UI.
-	commands.executeCommand("editor.action.peekLocations", ed.document.uri, ed.selection.active, [new Location(view(chosen), new Position(0, 0))], "peek");
+	peekAt(ed.document.uri, ed.selection.active, chosen);
+}
+
+// Built-in peek widget: the dump renders inline under `at`, no custom UI.
+function peekAt(doc:Uri, at:Position, dump:Uri)
+	commands.executeCommand("editor.action.peekLocations", doc, at, [new Location(view(dump), new Position(0, 0))], "peek");
+
+final lensChanged = new EventEmitter<Void>();
+var lensRefresh:Null<haxe.Timer> = null;
+
+// A dump build rewrites every dump at once: one lens refresh for the lot.
+function refreshLenses(_:Uri) {
+	if (lensRefresh != null) {
+		lensRefresh.stop();
+	}
+	lensRefresh = haxe.Timer.delay(() -> lensChanged.fire(), 300);
+}
+
+final relativeTime = new js.lib.intl.RelativeTimeFormat("en", {numeric: Auto});
+
+// Relative, as the extension host's time zone (a container's is usually UTC) needn't be the user's.
+function age(time:Float):String {
+	final mins = Math.round((time - Date.now().getTime()) / 60000);
+	return if (mins > -60) {
+		relativeTime.format(mins, Minute);
+	} else if (mins > -60 * 24) {
+		relativeTime.format(Math.round(mins / 60), Hour);
+	} else {
+		relativeTime.format(Math.round(mins / (60 * 24)), Day);
+	}
+}
+
+// A row above each module-level type that has a dump. Dumps aren't part of every build, so it
+// also says when the dump can't match this file: unsaved edits, or saved since it was written.
+// ponytail: only this file's mtime counts; an edited macro elsewhere (e.g. NodeMacros.hx) leaves the dump looking fresh
+@:jsasync function provideCodeLenses(doc:TextDocument, token:CancellationToken):Promise<Array<CodeLens>> {
+	if (!workspace.getConfiguration("haxeDump").get("codeLens", true)) {
+		return [];
+	}
+	final syms:Null<Array<Symbol>> = commands.executeCommand("vscode.executeDocumentSymbolProvider", doc.uri).jsawait();
+	final lenses:Array<CodeLens> = [];
+	if (syms == null) {
+		return lenses;
+	}
+	final saved = workspace.fs.stat(doc.uri).jsawait().mtime;
+	final file = doc.uri.path.substring(doc.uri.path.lastIndexOf("/") + 1);
+	final pkgDir = packageDir(doc);
+	for (s in syms) {
+		final type = firstWord.match(s.name) ? firstWord.matched(0) : "";
+		if (!typeName.match(type)) {
+			continue;
+		}
+		final hits = workspace.findFiles('dump/**/$type.dump', null, 20).jsawait();
+		if (hits.length == 0) {
+			continue;
+		}
+		final scope = candidates(hits, pkgDir);
+		final written = workspace.fs.stat(scope[0]).jsawait().mtime;
+		final when = age(written);
+		final info = '${workspace.asRelativePath(scope[0])}, written $when';
+		// The name, so the row sits on the declaration line: vshaxe starts `range` at the doc comment.
+		final range = s.selectionRange != null ? s.selectionRange : rangeOf(s);
+		lenses.push(new CodeLens(range, {title: "Peek .dump", command: "haxeDump.lensPeek", arguments: [scope, doc.uri, range.start], tooltip: info}));
+		lenses.push(new CodeLens(range, {title: "Open .dump", command: "haxeDump.lensOpen", arguments: [scope], tooltip: info}));
+		if (doc.isDirty || written < saved) {
+			final why = '$file changed after this dump was written ($when). Click to rebuild the dumps.';
+			lenses.push(new CodeLens(range, {title: "$(warning) stale .dump", command: "haxeDump.rebuild", arguments: [false], tooltip: why}));
+		}
+	}
+	return lenses;
+}
+
+// Lens clicks get the dumps the lens was built from, so no cursor guessing.
+@:jsasync function lensPeek(scope:Array<Uri>, doc:Uri, at:Position) {
+	final chosen = choose(scope).jsawait();
+	if (chosen != null) {
+		peekAt(doc, at, chosen);
+	}
+}
+
+@:jsasync function lensOpen(scope:Array<Uri>) {
+	final chosen = choose(scope).jsawait();
+	if (chosen != null) {
+		window.showTextDocument(view(chosen), {preview: false});
+	}
+}
+
+// Per workspace: a lens click rebuilds with the hxml used last.
+var memo:Null<Memento> = null;
+final lastHxml = "haxeDump.lastHxml";
+
+// The hxml to rebuild the dumps with. `ask` picks again (last one first) instead of reusing it.
+// Root-level only: libraries under .haxelib/node_modules ship hxml files of their own.
+@:jsasync function buildFile(ask:Bool):Promise<Null<Uri>> {
+	final hxmls = workspace.findFiles("*.hxml", null, 50).jsawait();
+	if (hxmls.length == 0) {
+		window.showErrorMessage("No .hxml in the workspace root to rebuild the dumps with.");
+		return null;
+	}
+	final last:Null<String> = memo.get(lastHxml);
+	final isLast = (uri:Uri) -> uri.toString() == last;
+	hxmls.sort((a, b) -> (isLast(b) ? 1 : 0) - (isLast(a) ? 1 : 0));
+	if (hxmls.length == 1 || (!ask && isLast(hxmls[0]))) {
+		return hxmls[0];
+	}
+	final items:Array<UriPick> = [
+		for (uri in hxmls) {
+			{label: workspace.asRelativePath(uri), description: isLast(uri) ? "last used" : null, uri: uri};
+		}
+	];
+	final chosen = window.showQuickPick(items, {placeHolder: "Rebuild the dumps with"}).jsawait();
+	if (chosen == null) {
+		return null;
+	}
+	memo.update(lastHxml, chosen.uri.toString());
+	return chosen.uri;
+}
+
+// An hxml's arguments with included hxml files inlined, resolved from `dir` as Haxe does.
+// ponytail: any argument ending in .hxml counts as an include (a `-D x=y.hxml` value would too), and --cwd is ignored
+function hxmlArgs(vshaxe:MetaDocs.Vshaxe, dir:String, hxml:String):Array<String> {
+	var args = [];
+	for (arg in vshaxe.parseHxmlToArguments(sys.io.File.getContent(js.node.Path.resolve(dir, hxml)))) {
+		args = args.concat(arg.endsWith(".hxml") ? hxmlArgs(vshaxe, dir, arg) : [arg]);
+	}
+	return args;
+}
+
+// A cold compile of the hxml plus -D dump=pretty, as a task so its output shows in a terminal.
+// The JS goes to a temp folder, leaving the dev build's output alone: only dump/ changes. Cold
+// on purpose: builds on vshaxe's server (6060) reset completion, and the extra define would pin
+// a second ~1.5 GB cache context in the dev stack's server (6061).
+@:jsasync function rebuild(ask:Bool) {
+	final ext:Null<Extension<MetaDocs.Vshaxe>> = extensions.getExtension("nadako.vshaxe");
+	if (ext == null) {
+		window.showErrorMessage("Rebuilding the dumps needs the Haxe extension (nadako.vshaxe).");
+		return;
+	}
+	final vshaxe = ext.activate().jsawait();
+	final hxml = buildFile(ask).jsawait();
+	if (hxml == null) {
+		return;
+	}
+	final dir = js.node.Path.dirname(hxml.fsPath);
+	final args = hxmlArgs(vshaxe, dir, js.node.Path.basename(hxml.fsPath));
+	final outputs = [
+		for (i => arg in args) {
+			if ((arg == "-js" || arg == "--js") && i + 1 < args.length) {
+				i + 1;
+			}
+		}
+	];
+	if (outputs.length == 0) {
+		window.showErrorMessage('${workspace.asRelativePath(hxml)} has no -js output: only JS builds can be rebuilt with dumps.');
+		return;
+	}
+	final tmp = js.node.Path.join(js.node.Os.tmpdir(), "haxe-dump-opener", js.node.Path.basename(dir));
+	for (i in outputs) {
+		args[i] = js.node.Path.join(tmp, js.node.Path.basename(args[i]));
+	}
+	final exe = vshaxe.haxeExecutable.configuration;
+	final run = new ProcessExecution(exe.executable, args.concat(["-D", "dump=pretty"]), {cwd: dir, env: exe.env});
+	tasks.executeTask(new Task({type: "haxeDump"}, workspace.getWorkspaceFolder(hxml), "Rebuild .dumps", "haxeDump", run));
 }
 
 @:expose("activate") function main(ctx:ExtensionContext) {
@@ -206,17 +383,34 @@ function rank(uri:Uri):Int
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.open", (?uri:Uri) -> open(uri)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.openToSide", (?uri:Uri) -> open(uri, Beside)));
 	ctx.subscriptions.push(commands.registerCommand("haxeDump.peek", (?uri:Uri) -> peek(uri)));
+	ctx.subscriptions.push(languages.registerCodeLensProvider({language: "haxe", scheme: "file"}, {provideCodeLenses: provideCodeLenses, onDidChangeCodeLenses: lensChanged.event}));
+	ctx.subscriptions.push(commands.registerCommand("haxeDump.lensPeek", lensPeek));
+	ctx.subscriptions.push(commands.registerCommand("haxeDump.lensOpen", lensOpen));
+	memo = ctx.workspaceState;
+	ctx.subscriptions.push(commands.registerCommand("haxeDump.rebuild", (?ask:Bool) -> rebuild(ask != false)));
 	MetaDocs.register(ctx);
 
 	// Every compile rewrites the dumps: re-wrap any open view of one. Cheap for closed ones,
 	// VS Code only re-asks for documents it has open.
 	ctx.subscriptions.push(workspace.registerTextDocumentContentProvider(viewScheme, {onDidChange: viewChanged.event, provideTextDocumentContent: provideView}));
-	final watcher = workspace.createFileSystemWatcher("**/dump/**/*.dump", false, false, true);
+	final watcher = workspace.createFileSystemWatcher("**/dump/**/*.dump");
 	ctx.subscriptions.push(watcher);
 	ctx.subscriptions.push(watcher.onDidChange(uri -> viewChanged.fire(view(uri))));
 	ctx.subscriptions.push(watcher.onDidCreate(uri -> viewChanged.fire(view(uri))));
-	ctx.subscriptions.push(workspace.onDidChangeConfiguration(e -> if (e.affectsConfiguration("haxeDump"))
-		for (doc in workspace.textDocuments)
-			if (doc.uri.scheme == viewScheme)
-				viewChanged.fire(doc.uri)));
+	// Lenses come and go with the dumps, and lose their stale flag once a rebuild rewrites them.
+	ctx.subscriptions.push(watcher.onDidChange(refreshLenses));
+	ctx.subscriptions.push(watcher.onDidCreate(refreshLenses));
+	ctx.subscriptions.push(watcher.onDidDelete(refreshLenses));
+	ctx.subscriptions.push(workspace.onDidChangeConfiguration(e -> {
+		if (e.affectsConfiguration("haxeDump.codeLens")) {
+			lensChanged.fire();
+		}
+		if (e.affectsConfiguration("haxeDump")) {
+			for (doc in workspace.textDocuments) {
+				if (doc.uri.scheme == viewScheme) {
+					viewChanged.fire(doc.uri);
+				}
+			}
+		}
+	}));
 }

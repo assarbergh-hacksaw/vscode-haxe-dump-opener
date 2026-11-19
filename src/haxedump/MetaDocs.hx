@@ -50,6 +50,8 @@ final suggest:Command = {title: "Suggest", command: "editor.action.triggerSugges
 
 typedef Vshaxe = {
 	function getActiveConfiguration():Promise<{final classPaths:Array<{final path:String;}>;}>;
+	function parseHxmlToArguments(hxml:String):Array<String>;
+	final haxeExecutable:{final configuration:{final executable:String; final env:haxe.DynamicAccess<String>;};};
 }
 
 // Read fresh on every request: a handful of exists() checks, and edits to the files or a switch
@@ -87,6 +89,9 @@ function markdown(meta:MetaDoc):MarkdownString {
 }
 
 @:jsasync function hover(doc:TextDocument, pos:Position, token:CancellationToken):Promise<Null<Hover>> {
+	if (!workspace.getConfiguration("haxeDump").get("metaHover", true)) {
+		return null;
+	}
 	final range = doc.getWordRangeAtPosition(pos, metaWord);
 	if (range == null) {
 		return null;
@@ -97,11 +102,14 @@ function markdown(meta:MetaDoc):MarkdownString {
 }
 
 @:jsasync function complete(doc:TextDocument, pos:Position, token:CancellationToken, context:CompletionContext):Promise<Array<CompletionItem>> {
+	final config = workspace.getConfiguration("haxeDump");
+	if (!config.get("metaCompletion", true)) {
+		return [];
+	}
 	final before = doc.getText(new Range(new Position(0, 0), pos));
 	if (inComment(before)) {
 		return [];
 	}
-	final config = workspace.getConfiguration("haxeDump");
 	final call = metaCall.exec(before);
 	if (call != null) {
 		if (!config.get("metaBracesOnParen", true)) {

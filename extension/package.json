@@ -3,7 +3,7 @@
 	"displayName": "Haxe Dump Opener",
 	"description": "Open the haxe -D dump output for the type under the cursor",
 	"publisher": "local",
-	"version": "0.10.0",
+	"version": "0.13.0",
 	"engines": { "vscode": "^1.80.0" },
 	"extensionKind": ["workspace"],
 	"main": "./extension.js",
@@ -12,6 +12,16 @@
 		"configuration": {
 			"title": "Haxe Dump Opener",
 			"properties": {
+				"haxeDump.hover": {
+					"type": "boolean",
+					"default": true,
+					"description": "Hovering a type name that has a dump shows a link that opens it."
+				},
+				"haxeDump.codeLens": {
+					"type": "boolean",
+					"default": true,
+					"description": "A \"Peek .dump · Open .dump\" row above each type that has a dump, flagged \"stale .dump\" when the file changed after the dump was written."
+				},
 				"haxeDump.wrapWidth": {
 					"type": "integer",
 					"default": 120,
@@ -30,6 +40,16 @@
 					"default": [":value"],
 					"description": "Metadata whose arguments are left on one line, e.g. \":value\" (the initializer copy the compiler adds next to every field)."
 				},
+				"haxeDump.metaHover": {
+					"type": "boolean",
+					"default": true,
+					"description": "Hovering metadata documented in a library's haxe-metadata.json shows its doc."
+				},
+				"haxeDump.metaCompletion": {
+					"type": "boolean",
+					"default": true,
+					"description": "\"@\" / \"@:\" completion for metadata documented in a library's haxe-metadata.json, with its doc."
+				},
 				"haxeDump.metaBraces": {
 					"type": "boolean",
 					"default": true,
@@ -45,8 +65,10 @@
 		"commands": [
 			{ "command": "haxeDump.open", "title": "Haxe: Open .dump for Class" },
 			{ "command": "haxeDump.openToSide", "title": "Haxe: Open .dump for Class to the Side" },
-			{ "command": "haxeDump.peek", "title": "Haxe: Peek .dump for Class" }
+			{ "command": "haxeDump.peek", "title": "Haxe: Peek .dump for Class" },
+			{ "command": "haxeDump.rebuild", "title": "Haxe: Rebuild .dumps" }
 		],
+		"taskDefinitions": [{ "type": "haxeDump" }],
 		"menus": {
 			"editor/context": [
 				{ "command": "haxeDump.peek", "when": "resourceExtname == .hx", "group": "0_haxeDump@1" },

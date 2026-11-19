@@ -152,6 +152,32 @@ class haxe_Exception extends Error {
 	}
 }
 haxe_Exception.__name__ = true;
+class haxe_Timer {
+	constructor(time_ms) {
+		let me = this;
+		this.id = setInterval(function() {
+			me.run();
+		},time_ms);
+	}
+	stop() {
+		if(this.id == null) {
+			return;
+		}
+		clearInterval(this.id);
+		this.id = null;
+	}
+	run() {
+	}
+	static delay(f,time_ms) {
+		let t = new haxe_Timer(time_ms);
+		t.run = function() {
+			t.stop();
+			f();
+		};
+		return t;
+	}
+}
+haxe_Timer.__name__ = true;
 class haxe_ValueException extends haxe_Exception {
 	constructor(value,previous,native) {
 		super(String(value),previous,native);
@@ -236,6 +262,20 @@ async function haxedump_Main_provideView(uri,token) {
 	let bytes = (await Vscode.workspace.fs.readFile(vscode_Uri.parse(uri.query)));
 	return haxedump_Wrap_wrap(new TextDecoder().decode(bytes),haxedump_Main_wrapOptions());
 }
+function haxedump_Main_rangeOf(s) {
+	if(s.range != null) {
+		return s.range;
+	} else {
+		return s.location.range;
+	}
+}
+function haxedump_Main_packageDir(doc) {
+	if(haxedump_Main_packageDecl.match(doc.getText())) {
+		return StringTools.replace(haxedump_Main_packageDecl.matched(1),".","/");
+	} else {
+		return "";
+	}
+}
 async function haxedump_Main_enclosingType(doc,pos) {
 	
 	let syms = (await Vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider",doc.uri));
@@ -246,7 +286,7 @@ async function haxedump_Main_enclosingType(doc,pos) {
 		while(_g < syms.length) {
 			let s = syms[_g];
 			++_g;
-			let range = s.range != null ? s.range : s.location.range;
+			let range = haxedump_Main_rangeOf(s);
 			if(!range.contains(pos)) {
 				continue;
 			}
@@ -281,8 +321,7 @@ function haxedump_Main_rank(uri) {
 		return 1;
 	}
 }
-async function haxedump_Main_pick(hits,pkgDir) {
-	
+function haxedump_Main_candidates(hits,pkgDir) {
 	let sorted = hits.slice();
 	sorted.sort(function(a,b) {
 		return haxedump_Main_rank(a) - haxedump_Main_rank(b);
@@ -294,7 +333,6 @@ async function haxedump_Main_pick(hits,pkgDir) {
 			return false;
 		}
 	};
-	let scope;
 	if(Lambda.exists(sorted,inPkg)) {
 		let _g = [];
 		let _g1 = 0;
@@ -306,10 +344,13 @@ async function haxedump_Main_pick(hits,pkgDir) {
 				_g.push(v);
 			}
 		}
-		scope = _g;
+		return _g;
 	} else {
-		scope = sorted;
+		return sorted;
 	}
+}
+async function haxedump_Main_choose(scope) {
+	
 	if(scope.length == 1) {
 		return scope[0];
 	}
@@ -404,16 +445,19 @@ async function haxedump_Main_resolve(uri) {
 	let cursorIn = ed != null && ed.document.uri.path == src ? ed : null;
 	let $module = src.substring(src.lastIndexOf("/") + 1,src.length - 3);
 	let type = (await haxedump_Main_targetType(cursorIn,$module));
-	let pkgDir = cursorIn != null && haxedump_Main_packageDecl.match(cursorIn.document.getText()) ? StringTools.replace(haxedump_Main_packageDecl.matched(1),".","/") : "";
+	let pkgDir = cursorIn != null ? haxedump_Main_packageDir(cursorIn.document) : "";
 	let hits = (await Vscode.workspace.findFiles("dump/**/" + type + ".dump",null,20));
 	if(hits.length == 0) {
 		haxedump_Main_reportMiss(type);
 		return null;
 	}
-	return (await haxedump_Main_pick(hits,pkgDir));
+	return (await haxedump_Main_choose(haxedump_Main_candidates(hits,pkgDir)));
 }
 async function haxedump_Main_provideHover(doc,pos,token) {
 	
+	if(!Vscode.workspace.getConfiguration("haxeDump").get("hover",true)) {
+		return null;
+	}
 	let range = doc.getWordRangeAtPosition(pos);
 	let word = range == null ? null : doc.getText(range);
 	if(word == null || !haxedump_Main_typeName.match(word)) {
@@ -447,7 +491,168 @@ async function haxedump_Main_peek(uri) {
 		Vscode.window.showTextDocument(haxedump_Main_view(chosen),{ preview : false});
 		return ;
 	}
-	Vscode.commands.executeCommand("editor.action.peekLocations",ed.document.uri,ed.selection.active,[new vscode_Location(haxedump_Main_view(chosen),new vscode_Position(0,0))],"peek");
+	haxedump_Main_peekAt(ed.document.uri,ed.selection.active,chosen);
+}
+function haxedump_Main_peekAt(doc,at,dump) {
+	Vscode.commands.executeCommand("editor.action.peekLocations",doc,at,[new vscode_Location(haxedump_Main_view(dump),new vscode_Position(0,0))],"peek");
+}
+function haxedump_Main_refreshLenses(_) {
+	if(haxedump_Main_lensRefresh != null) {
+		haxedump_Main_lensRefresh.stop();
+	}
+	haxedump_Main_lensRefresh = haxe_Timer.delay(function() {
+		haxedump_Main_lensChanged.fire();
+	},300);
+}
+function haxedump_Main_age(time) {
+	let mins = Math.round((time - new Date().getTime()) / 60000);
+	if(mins > -60) {
+		return haxedump_Main_relativeTime.format(mins,"minute");
+	} else if(mins > -1440) {
+		return haxedump_Main_relativeTime.format(Math.round(mins / 60),"hour");
+	} else {
+		return haxedump_Main_relativeTime.format(Math.round(mins / 1440),"day");
+	}
+}
+async function haxedump_Main_provideCodeLenses(doc,token) {
+	
+	if(!Vscode.workspace.getConfiguration("haxeDump").get("codeLens",true)) {
+		return [];
+	}
+	let syms = (await Vscode.commands.executeCommand("vscode.executeDocumentSymbolProvider",doc.uri));
+	let lenses = [];
+	if(syms == null) {
+		return lenses;
+	}
+	let saved = (await Vscode.workspace.fs.stat(doc.uri)).mtime;
+	let file = doc.uri.path.substring(doc.uri.path.lastIndexOf("/") + 1);
+	let pkgDir = haxedump_Main_packageDir(doc);
+	let _g = 0;
+	while(_g < syms.length) {
+		let s = syms[_g];
+		++_g;
+		let type = haxedump_Main_firstWord.match(s.name) ? haxedump_Main_firstWord.matched(0) : "";
+		if(!haxedump_Main_typeName.match(type)) {
+			continue;
+		}
+		let hits = (await Vscode.workspace.findFiles("dump/**/" + type + ".dump",null,20));
+		if(hits.length == 0) {
+			continue;
+		}
+		let scope = haxedump_Main_candidates(hits,pkgDir);
+		let written = (await Vscode.workspace.fs.stat(scope[0])).mtime;
+		let when = haxedump_Main_age(written);
+		let info = "" + Vscode.workspace.asRelativePath(scope[0]) + ", written " + when;
+		let range = s.selectionRange != null ? s.selectionRange : haxedump_Main_rangeOf(s);
+		lenses.push(new vscode_CodeLens(range,{ title : "Peek .dump", command : "haxeDump.lensPeek", 'arguments' : [scope,doc.uri,range.start], tooltip : info}));
+		lenses.push(new vscode_CodeLens(range,{ title : "Open .dump", command : "haxeDump.lensOpen", 'arguments' : [scope], tooltip : info}));
+		if(doc.isDirty || written < saved) {
+			let why = "" + file + " changed after this dump was written (" + when + "). Click to rebuild the dumps.";
+			lenses.push(new vscode_CodeLens(range,{ title : "$(warning) stale .dump", command : "haxeDump.rebuild", 'arguments' : [false], tooltip : why}));
+		}
+	}
+	return lenses;
+}
+async function haxedump_Main_lensPeek(scope,doc,at) {
+	
+	let chosen = (await haxedump_Main_choose(scope));
+	if(chosen != null) {
+		haxedump_Main_peekAt(doc,at,chosen);
+	}
+}
+async function haxedump_Main_lensOpen(scope) {
+	
+	let chosen = (await haxedump_Main_choose(scope));
+	if(chosen != null) {
+		Vscode.window.showTextDocument(haxedump_Main_view(chosen),{ preview : false});
+	}
+}
+async function haxedump_Main_buildFile(ask) {
+	
+	let hxmls = (await Vscode.workspace.findFiles("*.hxml",null,50));
+	if(hxmls.length == 0) {
+		Vscode.window.showErrorMessage("No .hxml in the workspace root to rebuild the dumps with.");
+		return null;
+	}
+	let last = haxedump_Main_memo.get(haxedump_Main_lastHxml);
+	let isLast = function(uri) {
+		return uri.toString() == last;
+	};
+	hxmls.sort(function(a,b) {
+		return (isLast(b) ? 1 : 0) - (isLast(a) ? 1 : 0);
+	});
+	if(hxmls.length == 1 || !ask && isLast(hxmls[0])) {
+		return hxmls[0];
+	}
+	let _g = [];
+	let _g1 = 0;
+	while(_g1 < hxmls.length) {
+		let uri = hxmls[_g1];
+		++_g1;
+		_g.push({ label : Vscode.workspace.asRelativePath(uri), description : isLast(uri) ? "last used" : null, uri : uri});
+	}
+	let items = _g;
+	let chosen = (await Vscode.window.showQuickPick(items,{ placeHolder : "Rebuild the dumps with"}));
+	if(chosen == null) {
+		return null;
+	}
+	haxedump_Main_memo.update(haxedump_Main_lastHxml,chosen.uri.toString());
+	return chosen.uri;
+}
+function haxedump_Main_hxmlArgs(vshaxe,dir,hxml) {
+	let args = [];
+	let _g = 0;
+	let _g1 = vshaxe.parseHxmlToArguments(js_node_Fs.readFileSync(js_node_Path.resolve(dir,hxml),{ encoding : "utf8"}));
+	while(_g < _g1.length) {
+		let arg = _g1[_g];
+		++_g;
+		args = args.concat(arg.endsWith(".hxml") ? haxedump_Main_hxmlArgs(vshaxe,dir,arg) : [arg]);
+	}
+	return args;
+}
+async function haxedump_Main_rebuild(ask) {
+	
+	let ext = Vscode.extensions.getExtension("nadako.vshaxe");
+	if(ext == null) {
+		Vscode.window.showErrorMessage("Rebuilding the dumps needs the Haxe extension (nadako.vshaxe).");
+		return ;
+	}
+	let vshaxe = (await ext.activate());
+	let hxml = (await haxedump_Main_buildFile(ask));
+	if(hxml == null) {
+		return ;
+	}
+	let dir = js_node_Path.dirname(hxml.fsPath);
+	let args = haxedump_Main_hxmlArgs(vshaxe,dir,js_node_Path.basename(hxml.fsPath));
+	let _g = [];
+	let _g_current = 0;
+	let _g_array = args;
+	while(_g_current < _g_array.length) {
+		let _g_value = _g_array[_g_current];
+		let _g_key = _g_current++;
+		let i = _g_key;
+		let arg = _g_value;
+		if((arg == "-js" || arg == "--js") && i + 1 < args.length) {
+			_g.push(i + 1);
+		}
+	}
+	let outputs = _g;
+	if(outputs.length == 0) {
+		Vscode.window.showErrorMessage("" + Vscode.workspace.asRelativePath(hxml) + " has no -js output: only JS builds can be rebuilt with dumps.");
+		return ;
+	}
+	let tmp = js_node_Path.join(js_node_Os.tmpdir(),"haxe-dump-opener",js_node_Path.basename(dir));
+	let _g1 = 0;
+	while(_g1 < outputs.length) {
+		let i = outputs[_g1];
+		++_g1;
+		args[i] = js_node_Path.join(tmp,js_node_Path.basename(args[i]));
+	}
+	let exe = vshaxe.haxeExecutable.configuration;
+	let run = new vscode_ProcessExecution(exe.executable,args.concat(["-D","dump=pretty"]),{ cwd : dir, env : exe.env});
+	let tmp1 = Vscode.tasks;
+	let tmp2 = Vscode.workspace.getWorkspaceFolder(hxml);
+	tmp1.executeTask(new vscode_Task({ type : "haxeDump"},tmp2,"Rebuild .dumps","haxeDump",run));
 }
 function haxedump_Main_main(ctx) {
 	ctx.subscriptions.push(Vscode.languages.registerHoverProvider({ language : "haxe"},{ provideHover : haxedump_Main_provideHover}));
@@ -463,9 +668,16 @@ function haxedump_Main_main(ctx) {
 	ctx.subscriptions.push(Vscode.commands.registerCommand("haxeDump.peek",function(uri) {
 		return haxedump_Main_peek(uri);
 	}));
+	ctx.subscriptions.push(Vscode.languages.registerCodeLensProvider({ language : "haxe", scheme : "file"},{ provideCodeLenses : haxedump_Main_provideCodeLenses, onDidChangeCodeLenses : haxedump_Main_lensChanged.event}));
+	ctx.subscriptions.push(Vscode.commands.registerCommand("haxeDump.lensPeek",haxedump_Main_lensPeek));
+	ctx.subscriptions.push(Vscode.commands.registerCommand("haxeDump.lensOpen",haxedump_Main_lensOpen));
+	haxedump_Main_memo = ctx.workspaceState;
+	ctx.subscriptions.push(Vscode.commands.registerCommand("haxeDump.rebuild",function(ask) {
+		return haxedump_Main_rebuild(ask != false);
+	}));
 	haxedump_MetaDocs_register(ctx);
 	ctx.subscriptions.push(Vscode.workspace.registerTextDocumentContentProvider(haxedump_Main_viewScheme,{ onDidChange : haxedump_Main_viewChanged.event, provideTextDocumentContent : haxedump_Main_provideView}));
-	let watcher = Vscode.workspace.createFileSystemWatcher("**/dump/**/*.dump",false,false,true);
+	let watcher = Vscode.workspace.createFileSystemWatcher("**/dump/**/*.dump");
 	ctx.subscriptions.push(watcher);
 	ctx.subscriptions.push(watcher.onDidChange(function(uri) {
 		haxedump_Main_viewChanged.fire(haxedump_Main_view(uri));
@@ -473,7 +685,13 @@ function haxedump_Main_main(ctx) {
 	ctx.subscriptions.push(watcher.onDidCreate(function(uri) {
 		haxedump_Main_viewChanged.fire(haxedump_Main_view(uri));
 	}));
+	ctx.subscriptions.push(watcher.onDidChange(haxedump_Main_refreshLenses));
+	ctx.subscriptions.push(watcher.onDidCreate(haxedump_Main_refreshLenses));
+	ctx.subscriptions.push(watcher.onDidDelete(haxedump_Main_refreshLenses));
 	ctx.subscriptions.push(Vscode.workspace.onDidChangeConfiguration(function(e) {
+		if(e.affectsConfiguration("haxeDump.codeLens")) {
+			haxedump_Main_lensChanged.fire();
+		}
 		if(e.affectsConfiguration("haxeDump")) {
 			let _g = 0;
 			let _g1 = Vscode.workspace.textDocuments;
@@ -569,6 +787,9 @@ function haxedump_MetaDocs_markdown(meta) {
 }
 async function haxedump_MetaDocs_hover(doc,pos,token) {
 	
+	if(!Vscode.workspace.getConfiguration("haxeDump").get("metaHover",true)) {
+		return null;
+	}
 	let range = doc.getWordRangeAtPosition(pos,haxedump_MetaDocs_metaWord);
 	if(range == null) {
 		return null;
@@ -581,11 +802,14 @@ async function haxedump_MetaDocs_hover(doc,pos,token) {
 }
 async function haxedump_MetaDocs_complete(doc,pos,token,context) {
 	
+	let config = Vscode.workspace.getConfiguration("haxeDump");
+	if(!config.get("metaCompletion",true)) {
+		return [];
+	}
 	let before = doc.getText(new vscode_Range(new vscode_Position(0,0),pos));
 	if(haxedump_MetaDocs_inComment(before)) {
 		return [];
 	}
-	let config = Vscode.workspace.getConfiguration("haxeDump");
 	let call = haxedump_MetaDocs_metaCall.exec(before);
 	if(call != null) {
 		if(!config.get("metaBracesOnParen",true)) {
@@ -887,6 +1111,7 @@ class js_node_KeyValue {
 		return this1[1];
 	}
 }
+var js_node_Os = require("os");
 var js_node_Path = require("path");
 var js_node_buffer_Buffer = require("buffer").Buffer;
 class js_node_stream_WritableNewOptionsAdapter {
@@ -1039,14 +1264,17 @@ var sys_io_FileSeek = $hxEnums["sys.io.FileSeek"] = { __ename__:true,__construct
 	,SeekEnd: {_hx_name:"SeekEnd",_hx_index:2,__enum__:"sys.io.FileSeek",toString:$estr}
 };
 sys_io_FileSeek.__constructs__ = [sys_io_FileSeek.SeekBegin,sys_io_FileSeek.SeekCur,sys_io_FileSeek.SeekEnd];
+var vscode_CodeLens = require("vscode").CodeLens;
 var vscode_CompletionItem = require("vscode").CompletionItem;
 var vscode_CompletionItemKind = require("vscode").CompletionItemKind;
 var vscode_Hover = require("vscode").Hover;
 var vscode_Location = require("vscode").Location;
 var vscode_MarkdownString = require("vscode").MarkdownString;
 var vscode_Position = require("vscode").Position;
+var vscode_ProcessExecution = require("vscode").ProcessExecution;
 var vscode_Range = require("vscode").Range;
 var vscode_SnippetString = require("vscode").SnippetString;
+var vscode_Task = require("vscode").Task;
 var vscode_Uri = require("vscode").Uri;
 var vscode_ViewColumn = require("vscode").ViewColumn;
 var vscode_WorkspaceEdit = require("vscode").WorkspaceEdit;
@@ -1057,6 +1285,7 @@ if(typeof(performance) != "undefined" ? typeof(performance.now) == "function" : 
 {
 	String.__name__ = true;
 	Array.__name__ = true;
+	Date.__name__ = "Date";
 }
 js_Boot.__toStr = ({ }).toString;
 var haxedump_Main_typeName = new EReg("^[A-Z]\\w*$","");
@@ -1065,6 +1294,11 @@ var haxedump_Main_packageDecl = new EReg("^package\\s+([\\w.]*)\\s*;","m");
 var haxedump_Main_dumpFlag = new EReg("(^|\\s)(-D|--define)\\s+dump[=\\s]","");
 var haxedump_Main_viewScheme = "haxedump";
 var haxedump_Main_viewChanged = new vscode_EventEmitter();
+var haxedump_Main_lensChanged = new vscode_EventEmitter();
+var haxedump_Main_lensRefresh = null;
+var haxedump_Main_relativeTime = new Intl.RelativeTimeFormat("en",{ numeric : "auto"});
+var haxedump_Main_memo = null;
+var haxedump_Main_lastHxml = "haxeDump.lastHxml";
 var haxedump_MetaDocs_docsFile = "haxe-metadata.json";
 var haxedump_MetaDocs_metaWord = new RegExp("@:?[\\w.]*");
 var haxedump_MetaDocs_metaCall = new RegExp("@(:?[\\w.]+)\\($");
